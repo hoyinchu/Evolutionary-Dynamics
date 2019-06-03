@@ -4,6 +4,9 @@ import graph_tool.all as gt
 import time
 import datetime
 import random
+import copy
+import os
+from graph_tool.all import *
 from gi.repository import Gtk, Gdk, GdkPixbuf, GObject
 
 # Data structure to support add, remove, and random choice
@@ -25,21 +28,39 @@ class ListDict(object):
         if position != len(self.items):
             self.items[position] = last_item
             self.item_to_position[last_item] = position
+            
+    def size(self):
+        return len(self.items)
+    
+    def print_inside(self):
+        print(self.items)
 
     def choose_random_item(self):
         return random.choice(self.items)
 
-# receives graph and list of vertices, update 'CDstate' of given vertices to cooperators (True)
-def initialize_cooperators(graph, vertices):
+# Initialize the properties of a graph, so far the properties include:
+# CDstate: Vertex property, boolean, 1 denotes a vertex is a cooperator
+# vertex_fill_color: Vertex property, vector<float> represents color of each vertex
+# cooperator_size: Graph property, keeps track of the number of cooperators in the graph
+
+def initialize_graph_properties(graph):
     CDstate = graph.new_vertex_property("bool")
     vertex_fill_color = graph.new_vertex_property("vector<float>")
-    for i in range(graph.get_vertices().size):
-        vertex_fill_color[i] = [255,0,0]
-    for i in vertices:
-        CDstate[i] = True # True/1 is cooperator
-        vertex_fill_color[i] = [0,255,0]
+    graphCooperatorSize = graph.new_graph_property("int")
+    
     graph.vertex_properties["CDstate"] = CDstate
     graph.vertex_properties["vertex_fill_color"] = vertex_fill_color
+    graph.graph_properties["cooperator_size"] = graphCooperatorSize
+    graph.graph_properties["cooperator_size"] = 0
+    
+    for i in range(graph.get_vertices().size):
+        vertex_fill_color[i] = [255,0,0]
+
+# Given a graph, turn the vertex on the given index to a cooperator
+def make_cooperator(graph,cooperatorIdx):
+    graph.vp.CDstate[cooperatorIdx] = True
+    graph.vp.vertex_fill_color[cooperatorIdx] = [0,255,0]
+    graph.gp.cooperator_size = graph.gp.cooperator_size + 1
 
 
 # receives graph with property 'CDstate', and returns the reproductive rate of 
@@ -52,98 +73,102 @@ def get_reproduction_rate(graph, vertexIndex, ratio, delta):
     return 1 + delta*(ratio*sum(cooperator_neighbors)-graph.vp.CDstate[vertexIndex])
 
 # Check if the given vertices are the same type
-def check_same_neighbors(graph,vertices):
+def check_same_type(graph,vertices):
     checkSum = 0;
     for i in vertices:
         checkSum = checkSum + graph.vp.CDstate[i]
     return checkSum == 0 or checkSum == vertices.size
 
+# Check if the given vertex is the same type as its neighbor
+def check_same_as_neighbor(graph,vertex):
+    allNeighbors = graph.get_out_neighbors(vertex)
+    for i in allNeighbors:
+        if(graph.vp.CDstate[i] != graph.vp.CDstate[vertex]):
+            return False
+    return True
+
+# Returns a ListDict with the graph's initial boundary set
+def find_initial_boundary_set(graph):
+    boundarySet = ListDict()
+    if(graph.gp.cooperator_size == 0):
+        return boundarySet
+    else:
+        for vertex in range(graph.num_vertices()):
+            # Add this vertex to boundary list if not all neighbors are the same as itself
+            if(not check_same_as_neighbor(graph,vertex)):
+                boundarySet.add_item(vertex)
+        return boundarySet
+                
+            
+
 # receives graph with property 'CDstate' and simulate Death-Birth update process
 # with parameters critical ratio (b/c)=r and selection strength delta
-# If boundaryOnly then only boundary nodes are considered in update 
 # returns estimate for fixation probability
 
-def fixation_probability_simulation(graph, ratio, delta, iterations,boundaryOnly=False):
+def fixation_probability_simulation(graph, ratio, delta, iterations, animate=False):
     successful_overtake = 0
     graph.set_directed(is_directed=False)
+    graphBoundarySet = find_initial_boundary_set(graph)
     print("simulation started\n")
+    graphWindow = None
+    #if(animate):
+        #graphWindow = GraphWindow(graph,pos=gt.arf_layout(graph),geometry=(500,400),vertex_fill_color=graph.vertex_properties["vertex_fill_color"])
+        #graphWindow.connect("delete_event",Gtk.main_quit)
+        #graphWindow.show_all()
     for j in range(iterations):
-        if(single_cooperator_simulation(graph,ratio,delta,boundaryOnly)):
-             successful_overtake += 1
-             print("Cooperator Succeeded at iteration "+str(j)+", total successes: "+str(successful_overtake)+" current success rate: "+str(successful_overtake*1.0/j)+"\n")
+        print("iteration: " + str(j))
+        graphCopy = copy.deepcopy(graph)
+        boundarySet = copy.deepcopy(graphBoundarySet)
+        if(graphCopy.gp.cooperator_size == 0):
+            initVertexIdx = np.random.choice(graphCopy.num_vertices())
+            make_cooperator(graphCopy,initVertexIdx)
+            boundaryVertices = graphCopy.get_out_neighbors(initVertexIdx)
+            for i in boundaryVertices:
+                boundarySet.add_item(i)
+            boundarySet.add_item(initVertexIdx)
+        while not(graphCopy.gp.cooperator_size == 0 or graphCopy.gp.cooperator_size == graphCopy.num_vertices()):
+            single_timestep_update(graphCopy,ratio,delta,boundarySet,animate,graphWindow)
+        if(graphCopy.gp.cooperator_size == graphCopy.num_vertices()):
+            successful_overtake += 1
+            print("Cooperator Succeeded at iteration "+str(j)+", total successes: "+str(successful_overtake)+" current success rate: "+str(successful_overtake*1.0/(j+1))+"\n")
     print("simulation ended\n")
     print("total successful overtake: "+str(successful_overtake)+"\n")
     print("total iterations: "+str(iterations)+"\n")
     
     return successful_overtake*1.0/iterations
 
-# Runs a single fixation simulation of a cooperator in a defector network
-# Returns true if cooperator wins and false otherwise
-def single_cooperator_simulation(graph, ratio, delta, boundaryOnly=False):
-        totalVertices = graph.num_vertices()
-        # select initial random uniform cooperator
-        # P.S. boundaryVertices is a np array
-        initVertexIdx = np.random.choice(totalVertices)
-        initialize_cooperators(graph, [initVertexIdx])
-        currentCooperators = 1
-        boundaryVertices = graph.get_out_neighbors(initVertexIdx)
-        boundarySet = ListDict()
-        for i in boundaryVertices:
-            boundarySet.add_item(i)
-        boundarySet.add_item(initVertexIdx)
-        while not(currentCooperators == 0 or currentCooperators == totalVertices):
-            curVertexIndex = np.random.choice(totalVertices)
-            allNeighbors = graph.get_out_neighbors(curVertexIndex)
-            if (boundaryOnly):
-                # Only choose from the boundary vertices
-                curVertexIndex = boundarySet.choose_random_item()
-                allNeighbors = graph.get_out_neighbors(curVertexIndex)
-                # Remove vertex from boundary certices if all neighbors are the same type
-                if(check_same_neighbors(graph,allNeighbors)):
-                    boundarySet.remove_item(curVertexIndex)
-                else:
-                    for k in allNeighbors:
-                        boundarySet.add_item(k)
-            # determines probabilities of replacement [v -> u]
-            curVertexRates = [get_reproduction_rate(graph, i, ratio, delta) for i in allNeighbors]
-            curVertexProb = [rt/sum(curVertexRates) for rt in curVertexRates]
-            # update state
-            neighborVertex = np.random.choice(allNeighbors, p=curVertexProb)
-            graph.vp.CDstate[curVertexIndex] = graph.vp.CDstate[neighborVertex]
-            graph.vp.vertex_fill_color[curVertexIndex] = graph.vp.vertex_fill_color[neighborVertex]
-            currentCooperators = sum(graph.vp.CDstate.a)
-        return currentCooperators == totalVertices
+# A single vertex from the boundary list is chosen to be replaced (infected) by its neighbors
+# ideally this mutate both the graph and boundarySet
+def single_timestep_update(graph, ratio, delta, boundarySet,animate=False,graphWindow=None):
+    curVertexIndex = boundarySet.choose_random_item()
+    allNeighbors = graph.get_out_neighbors(curVertexIndex)
+    # Remove vertex from boundary certices if all neighbors are the same type
+    if(check_same_type(graph,allNeighbors)):
+        boundarySet.remove_item(curVertexIndex)
+    else:
+        for k in allNeighbors:
+            boundarySet.add_item(k)
+    # determines probabilities of replacement [v -> u]
+    curVertexRates = [get_reproduction_rate(graph, i, ratio, delta) for i in allNeighbors]
+    curVertexProb = [rt/sum(curVertexRates) for rt in curVertexRates]
+    # update state
+    neighborVertex = np.random.choice(allNeighbors, p=curVertexProb)
+    infect(graph,neighborVertex,curVertexIndex)
+    #if(animate):
+        #graphWindow.graph.regenerate_surface()
+        #graphWindow.graph.queue_draw()
+    return True
+
+# infect vertex two with vertex one
+def infect(graph,infector,infectee):
+    if(graph.vp.CDstate[infector]==False and graph.vp.CDstate[infectee]==True):
+        graph.gp.cooperator_size = graph.gp.cooperator_size - 1
+    elif (graph.vp.CDstate[infector]==True and graph.vp.CDstate[infectee]==False):
+        graph.gp.cooperator_size = graph.gp.cooperator_size + 1
+    graph.vp.CDstate[infectee] = graph.vp.CDstate[infector]
+    graph.vp.vertex_fill_color[infectee] = graph.vp.vertex_fill_color[infector]
+    
         
-
-# compare speed of with/out using only boundary nodes using the same random seed
-def boundary_speeed_compare(graph, ratio, delta, iterations):
-    seedConstant = 100000
-    np.random.seed(seedConstant)
-    print("Seed Set to: " + str(seedConstant))
-    print("With Boundary Sim Started")
-    withBoundaryStartTime = time.time()
-    withBoundaryFix = fixation_probability_simulation(graph, ratio, delta, iterations,True)
-    withBoundaryElapsedTime = round(time.time() - withBoundaryStartTime,2)
-    print("With Boundary Sim ended, time elapsed: " +str(withBoundaryElapsedTime))
-    print("With Boundary Fixation Prob: " + str(withBoundaryFix))
-    
-    print("Seed Reset")
-    np.random.seed(seedConstant)
-    print("Without Boundary Sim Started")
-    withoutBoundaryStartTime = time.time()
-    withoutBoundaryFix = fixation_probability_simulation(graph, ratio, delta, iterations)
-    withoutBoundaryElapsedTime = round(time.time() - withoutBoundaryStartTime,2)
-    print("Without Boundary Sim ended, time elapsed: " +str(withoutBoundaryElapsedTime))
-    print("Without Boundary Fixation Prob: " +str(withoutBoundaryFix))
-    
-    print("Final Comparison:")
-    print("With Boundary Sim: " +str(withBoundaryElapsedTime))
-    print("Without Boundary Sim: " +str(withoutBoundaryElapsedTime))
-    print("With Boundary Fixation Prob: " +str(withBoundaryFix))
-    print("Without Boundary Fixation Prob: " +str(withoutBoundaryFix))
-    print("Seed Used: " + str(seedConstant))
-    
-
 # creates a random graph using erdos renyi model
 # probability is in percentage (0-100)
 # requireConnected requires the graph to be connected
@@ -160,6 +185,7 @@ def create_erdos_renyi(vertices,probability,requireConnected=True,isDirected=Fal
                         edgeList.append((i,j))
         graph = gt.Graph(directed=isDirected)
         graph.add_edge_list(edgeList)
+        initialize_graph_properties(graph)
         if(not requireConnected):
             connected = True
         else:
@@ -180,6 +206,7 @@ def create_regular_graph(vertices,degree):
         edge_list = [(half_edge_list[2*i]//degree,half_edge_list[2*i+1]//degree) for i in range(vertices*degree/2)]
         graph = gt.Graph(directed=False)
         graph.add_edge_list(edge_list)
+        initialize_graph_properties(graph)
         connected = is_connected(graph)
     return graph
 
@@ -191,49 +218,43 @@ def create_regular_graph(vertices,degree):
 
 
 def create_regular_bridge_graph(totalVertices,degree,totalCooperators,totalBridgeEdges):
-
     connected = False
-    graph = gt.Graph(directed=False)
     while(not connected):
+        # Initialize graph properties
         graph = gt.Graph(directed=False)
+        
         # Initialize half edges for cooperators and defectors then connect them
         # replace=False prevents two opposing vertices from having more than one bridge edge but is it what we want?
         coopDegree = totalCooperators*degree
         totalDegree = totalVertices*degree
         coopHalfBridgeEdges = np.random.choice(coopDegree,totalBridgeEdges,replace=False)
-        print("coop half bridge edge")
-        print(coopHalfBridgeEdges)
         defcHalfBridgeEdges = np.random.choice(np.array(range(coopDegree,totalDegree)),totalBridgeEdges,replace=False)
-        print("defc half bridge edge")
-        print(defcHalfBridgeEdges)
         bridgeEdgePairs = zip(coopHalfBridgeEdges,defcHalfBridgeEdges)
-        print("bridge edge pairs")
-        print(bridgeEdgePairs)
-        print(type(bridgeEdgePairs))
         
         # Permute remaining cooperator half edges and match them
         coopRemainEdges = np.setdiff1d(np.array(range(coopDegree)),coopHalfBridgeEdges)
         coopRemainEdges = np.random.permutation(coopRemainEdges)
         coopRemainPairs = [(coopRemainEdges[2*i],coopRemainEdges[2*i+1]) for i in range(coopRemainEdges.size/2)]
-        print("coopRemainPairs")
-        print(coopRemainPairs)
 
         # Permute remaining defector half edges and match them
         defcRemainEdges = np.setdiff1d(np.array(range(coopDegree,totalDegree)),defcHalfBridgeEdges)
         defcRemainEdges = np.random.permutation(defcRemainEdges)
         defcRemainPairs = [(defcRemainEdges[2*i],defcRemainEdges[2*i+1]) for i in range(defcRemainEdges.size/2)]
-        print("defcRemainPairs")
-        print(defcRemainPairs)
 
         # Return full pair list by int dividing degree
-        allPairs = bridgeEdgePairs
-        allPairs.extend(coopRemainPairs)
-        allPairs.extend(defcRemainPairs)
-        edgeList = [(halfEdge1 // degree, halfEdge2 // degree) for (halfEdge1,halfEdge2) in allPairs]
+        bridgeEdgeList = [(bridgeEdge1 // degree, bridgeEdge2 // degree) for (bridgeEdge1,bridgeEdge2) in bridgeEdgePairs]    
+        coopRemainEdgeList = [(coopRemainEdge1 // degree, coopRemainEdge2 // degree) for (coopRemainEdge1,coopRemainEdge2) in coopRemainPairs]
+        defcRemainEdgeList = [(defcRemainEdge1 // degree, defcRemainEdge2 // degree) for (defcRemainEdge1,defcRemainEdge2) in defcRemainPairs]
+        
+        edgeList = bridgeEdgeList
+        edgeList.extend(coopRemainEdgeList)
+        edgeList.extend(defcRemainEdgeList)
         
         graph.add_edge_list(edgeList)
+        initialize_graph_properties(graph)
+        for i in range(totalCooperators):
+            make_cooperator(graph,i)
         connected = is_connected(graph)
-    initialize_cooperators(graph,range(totalCooperators))
     return graph
     
 
@@ -245,6 +266,10 @@ def is_connected(g):
         return True
     except:
         return False
+        
+# Calculate the critical ratio for a regular graph
+def calculate_regular_critaical_ratio(totalVertices,degree):
+    return (totalVertices-2)*1.0/((totalVertices*1.0/degree)-2)
 
 def main():
     argLength = len(sys.argv)
@@ -252,9 +277,10 @@ def main():
         print("to create erdos renyi graph, use arguments: create_erdos_renyi <vertices> <probability>\n")
         print("to create regular graph, use arguments: create_regular <vertices> <degree>\n")
         print("to show a graph, use arguments: show_graph <file path>\n")
-        print("to run fixation probability simulation, use arguments: fix_sim <file path> <ratio> <delta> <iterations> <save animation>\n")
-        print("to compare fixation probability speed with/without using boundary nodes, use arguments: compare_sim <file path> <ratio> <delta> <iterations>\n")
+        print("to run fixation probability simulation, use arguments: fix_sim <file path> <ratio> <delta> <iterations>\n")
         print("to create regular cooperator-defector connected graph, use arguments: create_regular_bridge <vertices> <degree> <cooperators> <connected edges>\n")
+        print("to calculate the critical ratio of a regular graph, use arguments: regular_crit <vertices> <degree>")
+        print("to make a lot of bridge graphs of vertice v and degree d, use arguments: make_a_lot_bridge_graphs <vertices> <degree>")
         print("Note that in cooperator-defector connected graph <cooperator> and <connected edges> must be both even and <connected edges> is less than or equal to min{<cooperator>*<degree>, <totalVertices>*<degree> - <cooperator>*<degree>}\n")
         print("animate requires PyGObject dependency")
     else:
@@ -277,15 +303,17 @@ def main():
             print("Graph created and saved to " + fileName)
         elif(sys.argv[1] == "fix_sim"):
             graphPath = sys.argv[2]
+            baseGraphName = os.path.basename(graphPath)
             ratio = float(sys.argv[3])
             delta = float(sys.argv[4])
             iterations = int(sys.argv[5])
+            #animate = bool(sys.argv[6])
             graph = gt.load_graph(graphPath)
             startTime = time.time()
-            estimate = fixation_probability_simulation(graph,ratio,delta,iterations,True)
+            estimate = fixation_probability_simulation(graph,ratio,delta,iterations)
             elapsedTime = round(time.time() - startTime,2)
             currentTime = str(datetime.datetime.now())
-            fileName = currentTime + " fixation_simulation"
+            fileName = currentTime + "_fixation_simulation_on_" + baseGraphName
             sim_record = open(fileName,"w")
             sim_record.write("Simulation Result from " + currentTime + "\n")
             sim_record.write("Parameters:\n")
@@ -302,14 +330,6 @@ def main():
         elif(sys.argv[1] == "show_graph"):
             graph = gt.load_graph(sys.argv[2])
             gt.graph_draw(graph,pos=gt.arf_layout(graph))
-        elif(sys.argv[1] == "compare_sim"):
-            graphPath = sys.argv[2]
-            ratio = float(sys.argv[3])
-            delta = float(sys.argv[4])
-            iterations = int(sys.argv[5])
-            graph = gt.load_graph(graphPath)
-            boundary_speeed_compare(graph,ratio,delta,iterations)
-            print("Comparison simulation over, no record saved")
         elif(sys.argv[1] == "create_regular_bridge"):
             totalVertices = int(sys.argv[2])
             degree = int(sys.argv[3])
@@ -320,8 +340,22 @@ def main():
             fileName = "./graph_data/bridge_graph/regular_bridge_n" + str(totalVertices) + "_d" + str(degree) + "_coop"+ str(totalCooperators) +"_conn" + str(totalBridgeEdges) +".gt"
             graph.save(fileName)
             print("Graph created, saved to: " + fileName)
-        
-        
-        
+        elif(sys.argv[1] == "regular_crit"):
+            totalVertices = int(sys.argv[2])
+            degree = int(sys.argv[3])
+            print(calculate_regular_critaical_ratio(totalVertices,degree))
+        elif(sys.argv[1] == "make_a_lot_bridge_graphs"):
+            totalVertices = int(sys.argv[2])
+            degree = int(sys.argv[3])
+            for initCoop in range(totalVertices):
+                totalDegree = totalVertices * degree
+                maxBridgeEdges = min(initCoop * degree, totalDegree - initCoop*degree)
+                for initBridge in range(maxBridgeEdges):
+                    if (not initCoop == 0 and init % 2 == 0 and not maxBridgeEdges == 0 and maxBridgeEdges % 2 == 0)
+                        graph = create_regular_bridge_graph(totalVertices,degree,initCoop,initBridge)
+                        fileName = "./graph_data/bridge_graph/regular_bridge_n" + str(totalVertices) + "_d" + str(degree) + "_coop"+ str(totalCooperators) +"_conn" + str(totalBridgeEdges) +".gt"
+                        graph.save(fileName)
+                        print("creating file: " + fileName)
+            print("Done")
 if __name__ == "__main__":
     main()
