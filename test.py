@@ -6,6 +6,9 @@ import datetime
 import random
 import copy
 import os
+import re
+import matplotlib
+import matplotlib.pyplot as plt
 from graph_tool.all import *
 from gi.repository import Gtk, Gdk, GdkPixbuf, GObject
 
@@ -220,6 +223,7 @@ def create_regular_graph(vertices,degree):
 def create_regular_bridge_graph(totalVertices,degree,totalCooperators,totalBridgeEdges):
     connected = False
     while(not connected):
+        print("Creating regular bridge graph...")
         # Initialize graph properties
         graph = gt.Graph(directed=False)
         
@@ -242,7 +246,7 @@ def create_regular_bridge_graph(totalVertices,degree,totalCooperators,totalBridg
         defcRemainPairs = [(defcRemainEdges[2*i],defcRemainEdges[2*i+1]) for i in range(defcRemainEdges.size/2)]
 
         # Return full pair list by int dividing degree
-        bridgeEdgeList = [(bridgeEdge1 // degree, bridgeEdge2 // degree) for (bridgeEdge1,bridgeEdge2) in bridgeEdgePairs]    
+        bridgeEdgeList = [(bridgeEdge1 // degree, bridgeEdge2 // degree) for (bridgeEdge1,bridgeEdge2) in bridgeEdgePairs]
         coopRemainEdgeList = [(coopRemainEdge1 // degree, coopRemainEdge2 // degree) for (coopRemainEdge1,coopRemainEdge2) in coopRemainPairs]
         defcRemainEdgeList = [(defcRemainEdge1 // degree, defcRemainEdge2 // degree) for (defcRemainEdge1,defcRemainEdge2) in defcRemainPairs]
         
@@ -280,7 +284,8 @@ def main():
         print("to run fixation probability simulation, use arguments: fix_sim <file path> <ratio> <delta> <iterations>\n")
         print("to create regular cooperator-defector connected graph, use arguments: create_regular_bridge <vertices> <degree> <cooperators> <connected edges>\n")
         print("to calculate the critical ratio of a regular graph, use arguments: regular_crit <vertices> <degree>")
-        print("to make a lot of bridge graphs of vertice v and degree d, use arguments: make_a_lot_bridge_graphs <vertices> <degree>")
+        print("to make a lot of bridge graphs of vertice v and degree d, use arguments: make_a_lot_of_bridge_graphs <vertices> <degree>")
+        print("to run simulation on a lot of bridge graphs, use arguments: run_a_lot_of_simulations <verticces> <degree> <cooperator>")
         print("Note that in cooperator-defector connected graph <cooperator> and <connected edges> must be both even and <connected edges> is less than or equal to min{<cooperator>*<degree>, <totalVertices>*<degree> - <cooperator>*<degree>}\n")
         print("animate requires PyGObject dependency")
     else:
@@ -329,7 +334,7 @@ def main():
             print("record saved to current directory, name: " + fileName)
         elif(sys.argv[1] == "show_graph"):
             graph = gt.load_graph(sys.argv[2])
-            gt.graph_draw(graph,pos=gt.arf_layout(graph))
+            gt.graph_draw(graph,pos=gt.arf_layout(graph),vertex_fill_color=graph.vp.vertex_fill_color)
         elif(sys.argv[1] == "create_regular_bridge"):
             totalVertices = int(sys.argv[2])
             degree = int(sys.argv[3])
@@ -344,18 +349,62 @@ def main():
             totalVertices = int(sys.argv[2])
             degree = int(sys.argv[3])
             print(calculate_regular_critaical_ratio(totalVertices,degree))
-        elif(sys.argv[1] == "make_a_lot_bridge_graphs"):
+        elif(sys.argv[1] == "make_a_lot_of_bridge_graphs"):
             totalVertices = int(sys.argv[2])
             degree = int(sys.argv[3])
+            totalDegree = totalVertices * degree
             for initCoop in range(totalVertices):
-                totalDegree = totalVertices * degree
+                print("current cooperator: " + str(initCoop))
                 maxBridgeEdges = min(initCoop * degree, totalDegree - initCoop*degree)
                 for initBridge in range(maxBridgeEdges):
-                    if (not initCoop == 0 and init % 2 == 0 and not maxBridgeEdges == 0 and maxBridgeEdges % 2 == 0)
+                    print("current bridge edges: " + str(initBridge))
+                    if ((not initCoop == 0) and initCoop % 2 == 0 and (not initBridge == 0) and initBridge % 2 == 0):
                         graph = create_regular_bridge_graph(totalVertices,degree,initCoop,initBridge)
-                        fileName = "./graph_data/bridge_graph/regular_bridge_n" + str(totalVertices) + "_d" + str(degree) + "_coop"+ str(totalCooperators) +"_conn" + str(totalBridgeEdges) +".gt"
+                        fileName = "./graph_data/bridge_graph/regular_bridge_n" + str(totalVertices) + "_d" + str(degree) + "_coop"+ str(initCoop) +"_conn" + str(initBridge) +".gt"
                         graph.save(fileName)
                         print("creating file: " + fileName)
             print("Done")
+        elif(sys.argv[1] == "run_a_lot_of_simulations"):
+            totalVertices = int(sys.argv[2])
+            degree = int(sys.argv[3])
+            totalDegree = totalVertices * degree
+            totalCooperators = int(sys.argv[4])
+            ratio = float(sys.argv[5])
+            delta = float(sys.argv[6])
+            iterations = int(sys.argv[7])
+            simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + ".npy"
+            graphDataPath = "./graph_data/bridge_graph/"
+            matchingString = "regular_bridge_n" + str(totalVertices) + "_d" + str(degree) + "_coop" + str(totalCooperators) + "_"
+            print("Running simulation on all graphs with cooperator: " + str(totalCooperators))
+            if (not os.path.isfile(simDataFile)):
+                npMatrix = np.zeros((totalDegree,totalVertices))
+                np.save(simDataFile,npMatrix)
+            npMatrix = np.load(simDataFile)
+            files = []
+            for i in os.listdir(graphDataPath):
+                if os.path.isfile(os.path.join(graphDataPath,i)) and matchingString in i:
+                    files.append(i)
+            print(str(len(files)) + " files found")
+            print("Global Setting: Total Vertices=" + str(totalVertices) + ", Cooperators=" + str(totalCooperators))
+            print("Global Setting: Ratio=" + str(ratio) + ", Delta=" + str(delta) + ", Iterations=" + str(iterations))
+            for oneFile in files:
+                graph = gt.load_graph(os.path.join(graphDataPath,oneFile))
+                match = re.search("conn(\d+)",oneFile)
+                if match:
+                    bridgeEdges = match.group(1)
+                    print("Running simulation on " + str(os.path.join(graphDataPath,oneFile)))
+                    print("Current Setting: Connectivity= " + str(bridgeEdges))
+                    estimate = fixation_probability_simulation(graph,ratio,delta,iterations)
+                    print("Simulation Ended, Writing to npMatrix")
+                    npMatrix[int(bridgeEdges),int(totalCooperators)] = estimate
+                    np.save(simDataFile,npMatrix)
+                    print("Record Saved")
+        elif(sys.argv[1] == "show_data"):
+            npMatrix = np.load(sys.argv[2])
+            fig, ax = plt.subplots()
+            im = ax.imshow(npMatrix)
+            plt.show()
+            print(npMatrix)                        
+            
 if __name__ == "__main__":
     main()
