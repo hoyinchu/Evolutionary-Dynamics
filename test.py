@@ -274,6 +274,93 @@ def is_connected(g):
 # Calculate the critical ratio for a regular graph
 def calculate_regular_critaical_ratio(totalVertices,degree):
     return (totalVertices-2)*1.0/((totalVertices*1.0/degree)-2)
+    
+# Runs the simulations according to the method provided
+# Methods: "iterative" for binary search style data generation, "complete" for all data points
+# if overnight=True, it will continue to run for all cooperators after the given one
+def batch_simulations(totalVertices,degree,totalCooperators,ratio,delta,iterations,method="complete",overnight=False):
+    totalDegree = totalVertices * degree
+    #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + ".npy"
+    simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta0.npy"
+    totalVertices = int(totalVertices)
+    if (not os.path.isfile(simDataFile)):
+        npMatrix = np.zeros((totalDegree,totalVertices))
+        np.save(simDataFile,npMatrix)
+    npMatrix = np.load(simDataFile)
+
+    while(totalCooperators <= totalVertices):
+        maxBridgeEdges = min(totalCooperators * degree, totalDegree - totalCooperators*degree)
+        if (method=="complete"):
+            for initBridge in range(maxBridgeEdges):
+                if(not initBridge == 0 and initBridge % 4 == 0):
+                    startTime = time.time()
+                    print("Simulating on cooperator: ")
+                    print(totalCooperators)
+                    print("Connectivity: ")
+                    print(initBridge)
+                    graph = create_regular_bridge_graph(totalVertices,degree,totalCooperators,initBridge)
+                    estimate = fixation_probability_simulation(graph,ratio,delta,iterations)
+                    npMatrix[int(initBridge),int(totalCooperators)] = estimate
+                    np.save(simDataFile,npMatrix)
+                    print("Record saved")
+                    print("Time used: ")
+                    print(round(time.time() - startTime,2))
+                    print("Files left to simulate: "+ str((maxBridgeEdges - initBridge) / 4))
+            if (overnight):
+                totalCooperators = totalCooperators + 2
+            else:
+                break    
+        elif (method=="iterative"):
+            # Check which connectivities have been recorded
+            doneList = []
+            doneList.append(0)
+            targetList = []
+            for i in range(maxBridgeEdges+1):
+                if(not npMatrix[i,int(totalCooperators)] == 0):
+                    print(i)
+                    doneList.append(i)
+            doneList.append(maxBridgeEdges+1)
+            # If no points have been done on this cooperator settings yet then we initialize with 2 graphs on the 1/3 and 2/3 of maxBridgeEdges
+            if (len(doneList) == 2):
+                firstTarget = (maxBridgeEdges + 1) / 3
+                if (firstTarget % 2 == 1):
+                    firstTarget = firstTarget - 1
+                secondTarget = firstTarget * 2
+                targetList.append(firstTarget)
+                targetList.append(secondTarget)
+                print("initial targets")
+            else:
+                # Generate the connectivities to run simulations on
+                for i in range(len(doneList)):
+                    if (i+1 < len(doneList)):
+                        target = (doneList[i] + doneList[i+1]) / 2
+                        if (target % 2 == 1):
+                            target = target - 1
+                        targetList.append(target)
+            print("The target list is: ")
+            print(targetList)
+            for target in targetList:
+                if (not target == 0 and npMatrix[target][totalCooperators] == 0):
+                    startTime = time.time()
+                    print("Simulating on cooperator: ")
+                    print(totalCooperators)
+                    print("Connectivity: ")
+                    print(target)
+                    graph = create_regular_bridge_graph(totalVertices,degree,totalCooperators,target)
+                    estimate = fixation_probability_simulation(graph,ratio,delta,iterations)
+                    npMatrix[target,totalCooperators] = estimate
+                    np.save(simDataFile,npMatrix)
+                    print("Record saved")
+                    print("Time used: ")
+                    print(round(time.time() - startTime,2))
+                    print("Target and target list")
+                    print(target)
+                    print(targetList)
+            if(overnight):
+                totalCooperators = totalCooperators + 2
+            else:
+                break
+    
 
 def main():
     argLength = len(sys.argv)
@@ -285,7 +372,8 @@ def main():
         print("to create regular cooperator-defector connected graph, use arguments: create_regular_bridge <vertices> <degree> <cooperators> <connected edges>\n")
         print("to calculate the critical ratio of a regular graph, use arguments: regular_crit <vertices> <degree>")
         print("to make a lot of bridge graphs of vertice v and degree d, use arguments: make_a_lot_of_bridge_graphs <vertices> <degree>")
-        print("to run simulation on a lot of bridge graphs, use arguments: run_a_lot_of_simulations <verticces> <degree> <cooperator>")
+        print("to run simulation on a lot of bridge graphs, use arguments: run_a_lot_of_simulations <vertices> <degree> <cooperator> <ratio> <delta> <iteration> <method> <overnight>")
+        print("<method> is either 'complete' or 'iterative' and if overnight=True it means you will be running for a looong time, probably")
         print("Note that in cooperator-defector connected graph <cooperator> and <connected edges> must be both even and <connected edges> is less than or equal to min{<cooperator>*<degree>, <totalVertices>*<degree> - <cooperator>*<degree>}\n")
         print("animate requires PyGObject dependency")
     else:
@@ -367,38 +455,17 @@ def main():
         elif(sys.argv[1] == "run_a_lot_of_simulations"):
             totalVertices = int(sys.argv[2])
             degree = int(sys.argv[3])
-            totalDegree = totalVertices * degree
             totalCooperators = int(sys.argv[4])
             ratio = float(sys.argv[5])
             delta = float(sys.argv[6])
             iterations = int(sys.argv[7])
-            simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + ".npy"
-            graphDataPath = "./graph_data/bridge_graph/"
-            matchingString = "regular_bridge_n" + str(totalVertices) + "_d" + str(degree) + "_coop" + str(totalCooperators) + "_"
-            print("Running simulation on all graphs with cooperator: " + str(totalCooperators))
-            if (not os.path.isfile(simDataFile)):
-                npMatrix = np.zeros((totalDegree,totalVertices))
-                np.save(simDataFile,npMatrix)
-            npMatrix = np.load(simDataFile)
-            files = []
-            for i in os.listdir(graphDataPath):
-                if os.path.isfile(os.path.join(graphDataPath,i)) and matchingString in i:
-                    files.append(i)
-            print(str(len(files)) + " files found")
-            print("Global Setting: Total Vertices=" + str(totalVertices) + ", Cooperators=" + str(totalCooperators))
-            print("Global Setting: Ratio=" + str(ratio) + ", Delta=" + str(delta) + ", Iterations=" + str(iterations))
-            for oneFile in files:
-                graph = gt.load_graph(os.path.join(graphDataPath,oneFile))
-                match = re.search("conn(\d+)",oneFile)
-                if match:
-                    bridgeEdges = match.group(1)
-                    print("Running simulation on " + str(os.path.join(graphDataPath,oneFile)))
-                    print("Current Setting: Connectivity= " + str(bridgeEdges))
-                    estimate = fixation_probability_simulation(graph,ratio,delta,iterations)
-                    print("Simulation Ended, Writing to npMatrix")
-                    npMatrix[int(bridgeEdges),int(totalCooperators)] = estimate
-                    np.save(simDataFile,npMatrix)
-                    print("Record Saved")
+            method = str(sys.argv[8])
+            overnight = str(sys.argv[9]) == "True"
+            if(not (method=="iterative" or method=="complete")):
+                print("Invalid Method!")
+            else:
+                batch_simulations(totalVertices,degree,totalCooperators,ratio,delta,iterations,method,overnight)
+            
         elif(sys.argv[1] == "show_data"):
             npMatrix = np.load(sys.argv[2])
             fig, ax = plt.subplots()
