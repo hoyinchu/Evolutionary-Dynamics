@@ -9,8 +9,11 @@ import os
 import re
 import matplotlib
 import matplotlib.pyplot as plt
-from graph_tool.all import *
-from gi.repository import Gtk, Gdk, GdkPixbuf, GObject
+import multiprocessing
+#from graph_tool.all import *
+#from gi.repository import Gtk, Gdk, GdkPixbuf, GObject
+
+WEAK_SELECTION_THRESHOLD = 1
 
 # Data structure to support add, remove, and random choice
 # Got from there: https://stackoverflow.com/questions/15993447/python-data-structure-for-efficient-add-remove-and-random-choice
@@ -31,13 +34,13 @@ class ListDict(object):
         if position != len(self.items):
             self.items[position] = last_item
             self.item_to_position[last_item] = position
-            
+
     def size(self):
         return len(self.items)
-    
+
     def print_inside(self):
         print(self.items)
-        
+
     def get(self,index):
         return items[index]
 
@@ -53,12 +56,12 @@ def initialize_graph_properties(graph):
     CDstate = graph.new_vertex_property("bool")
     vertex_fill_color = graph.new_vertex_property("vector<float>")
     graphCooperatorSize = graph.new_graph_property("int")
-    
+
     graph.vertex_properties["CDstate"] = CDstate
     graph.vertex_properties["vertex_fill_color"] = vertex_fill_color
     graph.graph_properties["cooperator_size"] = graphCooperatorSize
     graph.graph_properties["cooperator_size"] = 0
-    
+
     for i in range(graph.get_vertices().size):
         vertex_fill_color[i] = [255,0,0]
 
@@ -69,14 +72,20 @@ def make_cooperator(graph,cooperatorIdx):
     graph.gp.cooperator_size = graph.gp.cooperator_size + 1
 
 
-# receives graph with property 'CDstate', and returns the reproductive rate of 
+# receives graph with property 'CDstate', and returns the reproductive rate of
 # the vertex of given index with critical ratio and selection strength delta
-
+# Notice this data is actually normalized (a factor of c is divivded among all since we are using ratio)
 def get_reproduction_rate(graph, vertexIndex, ratio, delta):
-    cooperator_neighbors = list()
+    totalCoopNeighbors = 0
     for i in graph.get_out_neighbors(vertexIndex):
-        cooperator_neighbors.append(graph.vp.CDstate[i]*1.0 / graph.vertex(vertexIndex).out_degree())
-    return 1 + delta*(ratio*sum(cooperator_neighbors)-graph.vp.CDstate[vertexIndex])
+        totalCoopNeighbors += graph.vp.CDstate[i]
+    coopFreq = totalCoopNeighbors*1.0 / graph.vertex(vertexIndex).out_degree()
+    if (delta<WEAK_SELECTION_THRESHOLD):
+        return 1 + delta*(ratio*coopFreq-graph.vp.CDstate[vertexIndex])
+    else:
+        return np.exp(delta*(ratio*coopFreq-graph.vp.CDstate[vertexIndex]))
+
+
 
 # Check if the given vertices are the same type
 def check_same_type(graph,vertices):
@@ -104,8 +113,8 @@ def find_initial_boundary_set(graph):
             if(not check_same_as_neighbor(graph,vertex)):
                 boundarySet.add_item(vertex)
         return boundarySet
-                
-            
+
+
 
 # receives graph with property 'CDstate' and simulate Death-Birth update process
 # with parameters critical ratio (b/c)=r and selection strength delta
@@ -142,7 +151,7 @@ def fixation_probability_simulation(graph, ratio, delta, iterations, animate=Fal
     print("simulation ended\n")
     print("total successful overtake: "+str(successful_overtake)+"\n")
     print("total iterations: "+str(iterations)+"\n")
-    
+
     return successful_overtake*1.0/iterations
 
 # Same as fixation probability simulation but instead evrey iteration a new bridge graph is generated
@@ -155,7 +164,7 @@ def graph_gen_simulation(totalVertices,degree,totalCooperators,totalBridgeEdges,
             successful_overtake += 1
             print("Cooperator Succeeded at iteration "+str(i)+", total successes: "+str(successful_overtake)+" current success rate: "+str(successful_overtake*1.0/(i+1))+"\n")
     return successful_overtake*1.0/iterations
-    
+
 # A single run of a simulation, returns True if cooperator wins
 # Keep in mind that the graph will be mutated and the graph provided must contain property init_boundary
 def single_simulation(graph,ratio,delta,animate=False,graphWindow=None):
@@ -171,7 +180,7 @@ def single_simulation(graph,ratio,delta,animate=False,graphWindow=None):
     while not(graph.gp.cooperator_size == 0 or graph.gp.cooperator_size == graph.num_vertices()):
         single_timestep_update(graph,ratio,delta,boundarySet,animate,graphWindow)
     return graph.gp.cooperator_size == graph.num_vertices()
-    
+
 
 # A single vertex from the boundary list is chosen to be replaced (infected) by its neighbors
 # ideally this mutate both the graph and boundarySet
@@ -186,7 +195,8 @@ def single_timestep_update(graph, ratio, delta, boundarySet,animate=False,graphW
             boundarySet.add_item(k)
     # determines probabilities of replacement [v -> u]
     curVertexRates = [get_reproduction_rate(graph, i, ratio, delta) for i in allNeighbors]
-    curVertexProb = [rt/sum(curVertexRates) for rt in curVertexRates]
+    totalRates = sum(curVertexRates)
+    curVertexProb = [rt/totalRates for rt in curVertexRates]
     # update state
     neighborVertex = np.random.choice(allNeighbors, p=curVertexProb)
     infect(graph,neighborVertex,curVertexIndex)
@@ -203,8 +213,8 @@ def infect(graph,infector,infectee):
         graph.gp.cooperator_size = graph.gp.cooperator_size + 1
     graph.vp.CDstate[infectee] = graph.vp.CDstate[infector]
     graph.vp.vertex_fill_color[infectee] = graph.vp.vertex_fill_color[infector]
-    
-        
+
+
 # creates a random graph using erdos renyi model
 # probability is in percentage (0-100)
 # requireConnected requires the graph to be connected
@@ -259,7 +269,7 @@ def create_regular_bridge_graph(totalVertices,degree,totalCooperators,totalBridg
         print("Creating regular bridge graph...")
         # Initialize graph properties
         graph = gt.Graph(directed=False)
-        
+
         # Initialize half edges for cooperators and defectors then connect them
         # replace=False prevents two opposing vertices from having more than one bridge edge but is it what we want?
         coopDegree = totalCooperators*degree
@@ -267,7 +277,7 @@ def create_regular_bridge_graph(totalVertices,degree,totalCooperators,totalBridg
         coopHalfBridgeEdges = np.random.choice(coopDegree,totalBridgeEdges,replace=False)
         defcHalfBridgeEdges = np.random.choice(np.array(range(coopDegree,totalDegree)),totalBridgeEdges,replace=False)
         bridgeEdgePairs = zip(coopHalfBridgeEdges,defcHalfBridgeEdges)
-        
+
         # Permute remaining cooperator half edges and match them
         coopRemainEdges = np.setdiff1d(np.array(range(coopDegree)),coopHalfBridgeEdges)
         coopRemainEdges = np.random.permutation(coopRemainEdges)
@@ -293,18 +303,18 @@ def create_regular_bridge_graph(totalVertices,degree,totalCooperators,totalBridg
 
         coopRemainEdgeList = [(coopRemainEdge1 // degree, coopRemainEdge2 // degree) for (coopRemainEdge1,coopRemainEdge2) in coopRemainPairs]
         defcRemainEdgeList = [(defcRemainEdge1 // degree, defcRemainEdge2 // degree) for (defcRemainEdge1,defcRemainEdge2) in defcRemainPairs]
-        
+
         edgeList = bridgeEdgeList
         edgeList.extend(coopRemainEdgeList)
         edgeList.extend(defcRemainEdgeList)
-        
+
         graph.add_edge_list(edgeList)
         initialize_graph_properties(graph)
         for i in range(totalCooperators):
             make_cooperator(graph,i)
         connected = is_connected(graph)
     return graph
-    
+
 
 # check connectivity of graph g
 
@@ -314,7 +324,7 @@ def is_connected(g):
         return True
     except:
         return False
-        
+
 # Calculate the critical ratio for a regular graph
 def calculate_regular_critaical_ratio(totalVertices,degree):
     return (totalVertices-2)*1.0/((totalVertices*1.0/degree)-2)
@@ -327,7 +337,8 @@ def single_run(totalVertices,degree,totalCooperators,totalBridgeEdges,ratio,delt
         totalDegree = totalVertices * degree
         #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + ".npy"
         #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta0.npy"
-        simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta0_graphgen.npy"
+        #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta0_graphgen.npy"
+        simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta"+ str(delta) +"_graphgen.npy"
         if (not os.path.isfile(simDataFile)):
             npMatrix = np.zeros((totalDegree,totalVertices))
             np.save(simDataFile,npMatrix)
@@ -348,38 +359,53 @@ def single_run(totalVertices,degree,totalCooperators,totalBridgeEdges,ratio,delt
             print(round(time.time() - startTime,2))
 
 # Prints the done data points from the given total vertices and degree
-def check_done_list(totalVertices,degree):
+def check_done_list(totalVertices,degree,delta):
     totalDegree = totalVertices * degree
     totalVertices = int(totalVertices)
     simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta0_graphgen.npy"
+    #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta"+ str(delta) +"_graphgen.npy"
     npMatrix = np.load(simDataFile)
     for cooperators in range(totalVertices):
         if(cooperators % 2 == 0 and not cooperators == 0):
             maxBridgeEdges = min(cooperators * degree, totalDegree - cooperators*degree)
             doneList = []
             for i in range(maxBridgeEdges+1):
-                if(not npMatrix[i,int(totalCooperators)] == 0):
+                if(not npMatrix[i,int(cooperators)] == 0):
                     doneList.append(i)
             print("Cooperator: ")
             print(cooperators)
             print("Done List: ")
             print(doneList)
-    
+            print("\n")
+
+            doneList = []
+            for i in range(maxBridgeEdges+1):
+                if(not npMatrix[i,int(totalVertices - cooperators)] == 0):
+                    doneList.append(i)
+            print("Cooperator: ")
+            print(totalVertices - cooperators)
+            print("Done List: ")
+            print(doneList)
+            print("\n")
+
 # Runs the simulations according to the method provided
 # Methods: "iterative" for binary search style data generation, "complete" for all data points
 # if overnight=True, it will continue to run for all cooperators after the given one
-def batch_simulations(totalVertices,degree,totalCooperators,ratio,delta,iterations,method="complete",overnight=False):
+def batch_simulations(totalVertices,degree,totalCooperators,ratio,delta,iterations,method="complete",overnight=False,parallel=False):
+    # The gap between every bridge edge
+    BRIDGE_GAP = 4
+    #CPU_CORE_COUNT = multiprocessing.cpu_count()
     totalDegree = totalVertices * degree
     totalVertices = int(totalVertices)
     #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + ".npy"
     #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta0.npy"
-    simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta0_graphgen.npy"
+    #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta0_graphgen.npy"
+    simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta"+ str(delta) +"_graphgen.npy"
     if (not os.path.isfile(simDataFile)):
         npMatrix = np.zeros((totalDegree,totalVertices))
         np.save(simDataFile,npMatrix)
     npMatrix = np.load(simDataFile)
-    while(totalCooperators < 36):
-    #while(totalCooperators < totalVertices):
+    while(totalCooperators < totalVertices):
         maxBridgeEdges = min(totalCooperators * degree, totalDegree - totalCooperators*degree)
         if (method=="complete"):
             for initBridge in range(maxBridgeEdges):
@@ -389,7 +415,7 @@ def batch_simulations(totalVertices,degree,totalCooperators,ratio,delta,iteratio
             if (overnight):
                 totalCooperators = totalCooperators + 2
             else:
-                break    
+                break
         elif (method=="iterative"):
             # Check which connectivities have been recorded
             doneList = []
@@ -431,7 +457,6 @@ def batch_simulations(totalVertices,degree,totalCooperators,ratio,delta,iteratio
                 totalCooperators = totalCooperators + 2
             else:
                 break
-    
 
 def main():
     argLength = len(sys.argv)
@@ -445,6 +470,7 @@ def main():
         print("to make a lot of bridge graphs of vertice v and degree d, use arguments: make_a_lot_of_bridge_graphs <vertices> <degree>")
         print("to run simulation on a lot of bridge graphs, use arguments: run_a_lot_of_simulations <vertices> <degree> <cooperator> <ratio> <delta> <iteration> <method> <overnight>")
         print("to run a standalone simulation, use arguments: single_run <vertices> <degree> <cooperator> <connected edges> <ratio> <delta> <iteration>")
+        print("to check what which cooperators data points have already been done, use arguments: check_done <vertices> <degree> <delta>")
         print("<method> is either 'complete' or 'iterative' and if overnight=True it means you will be running for a looong time, probably")
         print("Note that in cooperator-defector connected graph <cooperator> and <connected edges> must be both even and <connected edges> is less than or equal to min{<cooperator>*<degree>, <totalVertices>*<degree> - <cooperator>*<degree>}\n")
         print("animate requires PyGObject dependency")
@@ -546,12 +572,16 @@ def main():
             delta = float(sys.argv[7])
             iterations = int(sys.argv[8])
             single_run(totalVertices,degree,totalCooperators,totalBridgeEdges,ratio,delta,iterations)
+        elif(sys.argv[1] == "check_done"):
+            totalVertices = int(sys.argv[2])
+            degree = int(sys.argv[3])
+            check_done_list(totalVertices,degree,delta)
         elif(sys.argv[1] == "show_data"):
             npMatrix = np.load(sys.argv[2])
             fig, ax = plt.subplots()
             im = ax.imshow(npMatrix)
             plt.show()
-            print(npMatrix)                        
-            
+            print(npMatrix)
+
 if __name__ == "__main__":
     main()
