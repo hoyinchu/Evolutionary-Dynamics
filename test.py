@@ -9,7 +9,7 @@ import os
 import re
 import matplotlib
 import matplotlib.pyplot as plt
-import multiprocessing
+import multiprocessing as mp
 #from graph_tool.all import *
 #from gi.repository import Gtk, Gdk, GdkPixbuf, GObject
 
@@ -29,11 +29,12 @@ class ListDict(object):
         self.item_to_position[item] = len(self.items)-1
 
     def remove_item(self, item):
-        position = self.item_to_position.pop(item)
-        last_item = self.items.pop()
-        if position != len(self.items):
-            self.items[position] = last_item
-            self.item_to_position[last_item] = position
+        if item in self.item_to_position:
+            position = self.item_to_position.pop(item)
+            last_item = self.items.pop()
+            if position != len(self.items):
+                self.items[position] = last_item
+                self.item_to_position[last_item] = position
 
     def size(self):
         return len(self.items)
@@ -80,10 +81,10 @@ def get_reproduction_rate(graph, vertexIndex, ratio, delta):
     for i in graph.get_out_neighbors(vertexIndex):
         totalCoopNeighbors += graph.vp.CDstate[i]
     coopFreq = totalCoopNeighbors*1.0 / graph.vertex(vertexIndex).out_degree()
-    if (delta<WEAK_SELECTION_THRESHOLD):
-        return 1 + delta*(ratio*coopFreq-graph.vp.CDstate[vertexIndex])
-    else:
-        return np.exp(delta*(ratio*coopFreq-graph.vp.CDstate[vertexIndex]))
+    #if (delta<WEAK_SELECTION_THRESHOLD):
+        #return 1 + delta*(ratio*coopFreq-graph.vp.CDstate[vertexIndex])
+    #else:
+    return np.exp(delta*(ratio*coopFreq-graph.vp.CDstate[vertexIndex]))
 
 
 
@@ -145,9 +146,8 @@ def fixation_probability_simulation(graph, ratio, delta, iterations, animate=Fal
             graphCopy.graph_properties["init_boundary"] = init_boundary
             for vertex in boundarySet.items:
                 graphCopy.graph_properties["init_boundary"].append(vertex)
-        if(single_simulation(graphCopy,ratio,delta,animate,graphWindow)):
-            successful_overtake += 1
-            print("Cooperator Succeeded at iteration "+str(j)+", total successes: "+str(successful_overtake)+" current success rate: "+str(successful_overtake*1.0/(j+1))+"\n")
+        successful_overtake += single_simulation(graphCopy,ratio,delta,animate,graphWindow)
+        print("Cooperator Succeeded at iteration "+str(j)+", total successes: "+str(successful_overtake)+" current success rate: "+str(successful_overtake*1.0/(j+1))+"\n")
     print("simulation ended\n")
     print("total successful overtake: "+str(successful_overtake)+"\n")
     print("total iterations: "+str(iterations)+"\n")
@@ -158,11 +158,10 @@ def fixation_probability_simulation(graph, ratio, delta, iterations, animate=Fal
 def graph_gen_simulation(totalVertices,degree,totalCooperators,totalBridgeEdges,ratio,delta,iterations):
     successful_overtake = 0
     for i in range(iterations):
-        print("iteration" + str(i))
+        print("iteration" + str(i+1))
         graph = create_regular_bridge_graph(totalVertices,degree,totalCooperators,totalBridgeEdges)
-        if(single_simulation(graph,ratio,delta)):
-            successful_overtake += 1
-            print("Cooperator Succeeded at iteration "+str(i)+", total successes: "+str(successful_overtake)+" current success rate: "+str(successful_overtake*1.0/(i+1))+"\n")
+        successful_overtake += single_simulation(graph,ratio,delta)
+        print("Current success rate: "+str(successful_overtake*1.0/(i+1))+"\n")
     return successful_overtake*1.0/iterations
 
 # A single run of a simulation, returns True if cooperator wins
@@ -174,12 +173,36 @@ def single_simulation(graph,ratio,delta,animate=False,graphWindow=None):
     #else:
     init_boundary = graph.gp.init_boundary
     boundarySet = ListDict()
+    #activeEdgeSet = ListDict()
     #Since the init_boundary may contain duplicate we remove those by creating a new boundary set
     for vertex in init_boundary:
         boundarySet.add_item(vertex)
-    while not(graph.gp.cooperator_size == 0 or graph.gp.cooperator_size == graph.num_vertices()):
+    #for i in range(len(graph.gp.init_active_source)):
+        #activeEdgeSet.add_item((graph.gp.init_active_source[i],graph.gp.init_active_target[i]))
+        #activeEdgeSet.add_item((graph.gp.init_active_target[i],graph.gp.init_active_source[i]))
+    oscillationList = []
+    CDstateCopy = copy.deepcopy(graph.vp.CDstate.get_array())
+    localOscillationCounter = 0;
+    OSCILLATION_THRESHOLD = 200;
+    while not(graph.gp.cooperator_size == 0 or graph.gp.cooperator_size == graph.num_vertices() or localOscillationCounter>OSCILLATION_THRESHOLD):
         single_timestep_update(graph,ratio,delta,boundarySet,animate,graphWindow)
-    return graph.gp.cooperator_size == graph.num_vertices()
+        #print(activeEdgeItemsCopy)
+        #print(activeEdgeSet.items)
+        if (np.array_equal(CDstateCopy,graph.vp.CDstate.get_array())):
+            localOscillationCounter += 1
+        else:
+            oscillationList.append(localOscillationCounter)
+            localOscillationCounter = 0
+            CDstateCopy = copy.deepcopy(graph.vp.CDstate.get_array())
+    print("Final oscillation list")
+    print(oscillationList)
+    if(localOscillationCounter>OSCILLATION_THRESHOLD):
+        fileName = "threshold" + str(OSCILLATION_THRESHOLD) + "_n" + str(graph.num_vertices()) +"_coop" + str(graph.gp.cooperator_size) + "_oslen" + str(len(oscillationList)) + ".gt"
+        filePath = "./graph_data/stuck_graph/"
+        dest = filePath+fileName
+        graph.save(dest)
+
+    return graph.gp.cooperator_size*1.0 / graph.num_vertices()
 
 
 # A single vertex from the boundary list is chosen to be replaced (infected) by its neighbors
@@ -187,7 +210,7 @@ def single_simulation(graph,ratio,delta,animate=False,graphWindow=None):
 def single_timestep_update(graph, ratio, delta, boundarySet,animate=False,graphWindow=None):
     curVertexIndex = boundarySet.choose_random_item()
     allNeighbors = graph.get_out_neighbors(curVertexIndex)
-    # Remove vertex from boundary certices if all neighbors are the same type
+    # Remove vertex from boundary vertices if all neighbors are the same type
     if(check_same_type(graph,allNeighbors)):
         boundarySet.remove_item(curVertexIndex)
     else:
@@ -204,6 +227,34 @@ def single_timestep_update(graph, ratio, delta, boundarySet,animate=False,graphW
         #graphWindow.graph.regenerate_surface()
         #graphWindow.graph.queue_draw()
     return True
+
+def active_edge_process(graph,ratio,delta,activeEdgeSet):
+    activeRates = []
+    rateSum = 0
+    print("len of active edges: "+str(len(activeEdgeSet.items)))
+    # Calculate the activation probability of all active edges
+    for source,target in activeEdgeSet.items:
+        neighborRateSum = 0
+        for neighbor in graph.get_in_neighbors(source):
+            neighborRateSum += get_reproduction_rate(graph,neighbor,ratio,delta)
+        edgeRate = get_reproduction_rate(graph,source,ratio,delta)*1.0 / neighborRateSum
+        activeRates.append(edgeRate)
+        rateSum += edgeRate
+    edgeActivationProb = [edgeRate/rateSum for edgeRate in activeRates]
+    # Choose an edge to activate porportional to their probability
+    randIdx = np.random.choice(activeEdgeSet.size(),p=edgeActivationProb)
+    chosenOne = activeEdgeSet.items[randIdx]
+    sourceIdx = chosenOne[0]
+    targetIdx = chosenOne[1]
+    infect(graph,sourceIdx,targetIdx)
+    # update active edges. Remove if two nodes are same type
+    for neighbor in graph.get_in_neighbors(targetIdx):
+        if (graph.vp.CDstate[targetIdx] == graph.vp.CDstate[neighbor]):
+            activeEdgeSet.remove_item((targetIdx,neighbor))
+            activeEdgeSet.remove_item((neighbor,targetIdx))
+        else:
+            activeEdgeSet.add_item((targetIdx,neighbor))
+            activeEdgeSet.add_item((neighbor,targetIdx))
 
 # infect vertex two with vertex one
 def infect(graph,infector,infectee):
@@ -265,7 +316,7 @@ def create_regular_graph(vertices,degree):
 
 def create_regular_bridge_graph(totalVertices,degree,totalCooperators,totalBridgeEdges):
     connected = False
-    while(not connected):
+    while(not connected or self_loop):
         print("Creating regular bridge graph...")
         # Initialize graph properties
         graph = gt.Graph(directed=False)
@@ -293,13 +344,19 @@ def create_regular_bridge_graph(totalVertices,degree,totalCooperators,totalBridg
         # Notice init_boundary may contain duplicates
         bridgeEdgeList = []
         init_boundary = graph.new_graph_property("vector<int>")
+        #init_active_source = graph.new_graph_property("vector<int>")
+        #init_active_target = graph.new_graph_property("vector<int>")
         graph.graph_properties["init_boundary"] = init_boundary
+        #graph.graph_properties["init_active_source"] = init_active_source
+        #graph.graph_properties["init_active_target"] = init_active_target
         for (bridgeEdge1,bridgeEdge2) in bridgeEdgePairs:
             vertex1 = bridgeEdge1 // degree
             vertex2 = bridgeEdge2 // degree
             bridgeEdgeList.append((vertex1,vertex2))
             graph.graph_properties["init_boundary"].append(vertex1)
             graph.graph_properties["init_boundary"].append(vertex2)
+            #graph.graph_properties["init_active_source"].append(vertex1)
+            #graph.graph_properties["init_active_target"].append(vertex2)
 
         coopRemainEdgeList = [(coopRemainEdge1 // degree, coopRemainEdge2 // degree) for (coopRemainEdge1,coopRemainEdge2) in coopRemainPairs]
         defcRemainEdgeList = [(defcRemainEdge1 // degree, defcRemainEdge2 // degree) for (defcRemainEdge1,defcRemainEdge2) in defcRemainPairs]
@@ -307,12 +364,15 @@ def create_regular_bridge_graph(totalVertices,degree,totalCooperators,totalBridg
         edgeList = bridgeEdgeList
         edgeList.extend(coopRemainEdgeList)
         edgeList.extend(defcRemainEdgeList)
-
         graph.add_edge_list(edgeList)
         initialize_graph_properties(graph)
         for i in range(totalCooperators):
             make_cooperator(graph,i)
         connected = is_connected(graph)
+        self_loop = False;
+        for i in range(len(edgeList)):
+            if (edgeList[i][0] == edgeList[i][1]):
+                self_loop = True
     return graph
 
 
@@ -338,7 +398,8 @@ def single_run(totalVertices,degree,totalCooperators,totalBridgeEdges,ratio,delt
         #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + ".npy"
         #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta0.npy"
         #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta0_graphgen.npy"
-        simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta"+ str(delta) +"_graphgen.npy"
+        #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta"+ str(int(delta)) +"_graphgen.npy"
+        simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta"+ str(int(delta)) +"_graphgentest.npy"
         if (not os.path.isfile(simDataFile)):
             npMatrix = np.zeros((totalDegree,totalVertices))
             np.save(simDataFile,npMatrix)
@@ -394,13 +455,14 @@ def check_done_list(totalVertices,degree,delta):
 def batch_simulations(totalVertices,degree,totalCooperators,ratio,delta,iterations,method="complete",overnight=False,parallel=False):
     # The gap between every bridge edge
     BRIDGE_GAP = 4
-    #CPU_CORE_COUNT = multiprocessing.cpu_count()
+    CPU_CORE_COUNT = mp.cpu_count()
     totalDegree = totalVertices * degree
     totalVertices = int(totalVertices)
     #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + ".npy"
     #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta0.npy"
     #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta0_graphgen.npy"
-    simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta"+ str(delta) +"_graphgen.npy"
+    #simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta"+ str(int(delta)) +"_graphgen.npy"
+    simDataFile = "./sim_data/bridge_graph/bridge_graph_matrix_n" + str(totalVertices) + "_d" + str(degree) + "_delta"+ str(int(delta)) +"_graphgentest.npy"
     if (not os.path.isfile(simDataFile)):
         npMatrix = np.zeros((totalDegree,totalVertices))
         np.save(simDataFile,npMatrix)
@@ -425,7 +487,7 @@ def batch_simulations(totalVertices,degree,totalCooperators,ratio,delta,iteratio
                 if(not npMatrix[i,int(totalCooperators)] == 0):
                     print(i)
                     doneList.append(i)
-            doneList.append(maxBridgeEdges+1)
+            doneList.append(maxBridgeEdges)
             # If no points have been done on this cooperator settings yet then we initialize with 2 graphs on the 1/3 and 2/3 of maxBridgeEdges
             print("doneList")
             print(doneList)
