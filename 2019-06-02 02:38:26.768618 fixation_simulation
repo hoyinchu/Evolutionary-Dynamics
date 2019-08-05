@@ -1,9 +1,0 @@
-Simulation Result from 2019-06-02 02:38:26.768618
-Parameters:
-File Used: ./graph_data/bridge_graph/regular_bridge_n74_d4_coop36_conn144.gt
-Ratio:4.36
-Delta:0.1
-Iterations:100
-Results:
-Simulation Duration:92.88 seconds
-Fixation Probability Estimate: 0.02
